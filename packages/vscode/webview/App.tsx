@@ -140,6 +140,11 @@ export function App() {
   /** 选中的任务名。null = 对话视图。切换任务 = 切目录同款体感（2026-09-22
    *  拍板）：整个面板跟着换——对话流、控件区、上下文环、输入目标 */
   const [branch, setBranch] = useState<string | null>(null)
+  /** 正在改名编辑的任务（双击任务名进入，Enter 提交 / Esc 或失焦取消） */
+  const [renaming, setRenaming] = useState<string | null>(null)
+  /** 改名在途：等「旧名消失、新名出现」的快照迁移选中态与任务视图键。
+   *  宿主拒绝（撞名走 fatal 提示）时旧名一直在，挂着无害 */
+  const renameRef = useRef<{ from: string; to: string } | null>(null)
   /** 输入框的「开任务」模式：+ 按钮触发，回车把输入当第一条消息开任务并立即跑（同 /task，
    *  2026-11-09 起取代规则 13 的「只输名称开空任务」）、Esc 取消 */
   const [branchDraft, setBranchDraft] = useState(false)
@@ -323,6 +328,23 @@ export function App() {
         // 同 bg_processes：folder 由路由注入，非当前目录的任务不看
         if (msg.folder === folderRef.current) {
           setTasks(msg.tasks)
+          // 改名迁移（在途的 ref 只在旧名从快照消失时结算）：选中态跟到
+          // 新键（view_task 的 useEffect 跟 branch 走，自动重报）、任务
+          // 视图缓存迁 key。撞名失败旧名不消失，ref 留着等下一次
+          const rn = renameRef.current
+          if (
+            rn !== null &&
+            msg.tasks.every((t) => t.name !== rn.from) &&
+            msg.tasks.some((t) => t.name === rn.to)
+          ) {
+            renameRef.current = null
+            setBranch((b) => (b === rn.from ? rn.to : b))
+            setTaskViews((v) => {
+              if (!(rn.from in v)) return v
+              const { [rn.from]: old, ...rest } = v
+              return old === undefined ? rest : { ...rest, [rn.to]: old }
+            })
+          }
           // 选中任务的摘要开关以这批快照为准（乐观更新被宿主真值校正——
           // 任务不存在/写失败时回弹）
           const cur = branchRef.current
@@ -578,18 +600,40 @@ export function App() {
             data-status={t.status}
           >
             <span className="task-dot" data-status={t.status} />
-            <button
-              type="button"
-              className="branch-open"
-              title={t.error ?? t.lastText}
-              onClick={() => {
-                setBranch(t.name)
-                // 基线走宿主（单一真相）：webview 的增量投影不跨 attach 存活
-                post({ type: 'task_open', task: t.name })
-              }}
-            >
-              {t.name}
-            </button>
+            {renaming === t.name ? (
+              <input
+                className="branch-rename"
+                defaultValue={t.name}
+                autoFocus
+                // 失焦即弃：双击是轻交互，误触后点到别处不该提交
+                onBlur={() => setRenaming(null)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') setRenaming(null)
+                  if (e.key === 'Enter') {
+                    // 与宿主 nameOf 同规格：trim + 截 20；空或没变不打扰宿主
+                    const clean = e.currentTarget.value.trim().slice(0, 20)
+                    setRenaming(null)
+                    if (clean === '' || clean === t.name) return
+                    renameRef.current = { from: t.name, to: clean }
+                    post({ type: 'task_rename', task: t.name, name: clean })
+                  }
+                }}
+              />
+            ) : (
+              <button
+                type="button"
+                className="branch-open"
+                title={[t.error ?? t.lastText, '双击改名'].filter(Boolean).join('\n')}
+                onClick={() => {
+                  setBranch(t.name)
+                  // 基线走宿主（单一真相）：webview 的增量投影不跨 attach 存活
+                  post({ type: 'task_open', task: t.name })
+                }}
+                onDoubleClick={() => setRenaming(t.name)}
+              >
+                {t.name}
+              </button>
+            )}
             <PendingBadge approvals={approvals} task={t.name} />
             {/* 停止键不在这：切到该任务后输入框旁的 ■ 就是它的停止键
                 （用户拍板：和对话同一套）。跑着只有绿点；closing 灰点；
